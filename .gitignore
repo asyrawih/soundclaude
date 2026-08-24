@@ -1,2 +1,9 @@
 /target
 client_id.json
+
+# Audio written by `docker compose run scdl` and by local runs.
+/downloads/*
+!/downloads/.gitkeep
+*.mp3
+*.m4a
+*.opus

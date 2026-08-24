@@ -1,0 +1,21 @@
+# Build output — the image builds its own, and copying it in would break caching.
+target/
+**/target/
+
+.git/
+.gitignore
+
+# Downloaded audio and anything left over from local runs.
+downloads/
+*.mp3
+*.m4a
+*.opus
+client_id.json
+
+# The Node package this was ported from is not part of the build.
+node-soundcloud-downloader/
+
+Dockerfile
+.dockerignore
+docker-compose.yml
+README.md

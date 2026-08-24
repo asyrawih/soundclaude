@@ -1,0 +1,56 @@
+name: soundclaude
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: soundclaude:latest
+    restart: unless-stopped
+    ports:
+      - "${SOUNDCLAUDE_PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      RUST_LOG: "${RUST_LOG:-soundclaude_server=info,soundclaude=info,tower_http=info}"
+      # Leave unset to scrape a client_id automatically, which is the normal case.
+      # A value set here is pinned: if soundcloud rejects it, requests fail with
+      # 500 client_id_rejected rather than silently switching to a scraped one.
+      SOUNDCLOUD_CLIENT_ID: "${SOUNDCLOUD_CLIENT_ID:-}"
+      ALLOW_SCRAPE_FALLBACK: "${ALLOW_SCRAPE_FALLBACK:-}"
+      # CORS defaults to permissive. Set this before exposing the service publicly.
+      CORS_ALLOW_ORIGIN: "${CORS_ALLOW_ORIGIN:-}"
+    volumes:
+      # Survives restarts so the container is not re-scraping a client_id on boot.
+      - client-id-cache:/var/cache/soundclaude
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # One-shot CLI runs against the same image and the same client_id cache:
+  #   docker compose run --rm scdl info <url>
+  #   docker compose run --rm scdl get <url>
+  # Files land in ./downloads on the host.
+  scdl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: soundclaude:latest
+    profiles: ["cli"]
+    entrypoint: ["scdl"]
+    working_dir: /downloads
+    environment:
+      SOUNDCLOUD_CLIENT_ID: "${SOUNDCLOUD_CLIENT_ID:-}"
+      RUST_LOG: "${RUST_LOG:-}"
+    volumes:
+      - ./downloads:/downloads
+      - client-id-cache:/var/cache/soundclaude
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  client-id-cache:

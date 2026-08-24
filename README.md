@@ -136,6 +136,43 @@ A `SOUNDCLOUD_CLIENT_ID` that SoundCloud rejects surfaces as a `500` with kind
 fault (`4xx`) nor upstream being down (`502`). Set `ALLOW_SCRAPE_FALLBACK=1` to scrape a
 replacement and keep serving instead.
 
+## Docker
+
+```sh
+docker compose up -d --build
+curl localhost:8080/health
+```
+
+The server listens on `8080` (override with `SOUNDCLAUDE_PORT` on the host). The
+scraped `client_id` lives in a named volume, so restarts do not re-scrape it.
+
+The same image carries `scdl`, for one-shot runs sharing that cache:
+
+```sh
+docker compose run --rm scdl info https://soundcloud.com/artist/track
+docker compose run --rm scdl get  https://soundcloud.com/artist/track
+docker compose run --rm scdl playlist <url> -j 4 --number
+```
+
+Downloads land in `./downloads` on the host. That directory is committed with a
+`.gitkeep` on purpose: bind-mounting a path that does not exist makes Docker create it
+owned by root, which the unprivileged container user then cannot write to.
+
+Configuration is environment only — put it in a `.env` beside `docker-compose.yml`:
+
+| variable | effect |
+| --- | --- |
+| `SOUNDCLAUDE_PORT` | host port (default `8080`) |
+| `SOUNDCLOUD_CLIENT_ID` | pin a `client_id` instead of scraping one |
+| `ALLOW_SCRAPE_FALLBACK` | `1` to scrape a replacement if that id is rejected |
+| `CORS_ALLOW_ORIGIN` | lock CORS to one origin — **set this before exposing the service** |
+| `RUST_LOG` | log filter |
+
+Notes on the image: it runs as an unprivileged user (uid 10001), builds dependencies in
+a separate layer so editing application code does not recompile the whole tree, and
+carries `ca-certificates` because every request to SoundCloud is TLS. `curl` is present
+only so `HEALTHCHECK` has something to call.
+
 ## How it works
 
 SoundCloud has no public key issuance any more, so the library scrapes the `client_id`
