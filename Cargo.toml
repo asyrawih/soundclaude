@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/soundclaude",
+    "crates/soundclaude-cli",
+    "crates/soundclaude-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/dxh4nan/soundclaude"
+
+[workspace.dependencies]
+soundclaude = { path = "crates/soundclaude", version = "0.1.0" }
+
+anyhow = "1"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "stream", "json", "charset", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+
+# Pedantic is on so the mechanical stuff stays fixed. Two lints are off by choice,
+# not by oversight: both are conventions for a widely published crate and would add
+# a large amount of boilerplate here without catching anything.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+# Its suggestions include `map(<[u64]>::to_vec)` over `map(|c| c.to_vec())`, which
+# is harder to read for no gain.
+redundant_closure_for_method_calls = "allow"
+# It wants `Client.client_id` renamed to `Client.id`. `client_id` is soundcloud's
+# own term for the thing (`?client_id=`, `SOUNDCLOUD_CLIENT_ID`); `id` would read
+# as the identity of the Client itself.
+struct_field_names = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
