@@ -631,6 +631,7 @@ impl Client {
             };
 
             out.pages_fetched += 1;
+            likes::validate_kinds(&page.collection)?;
             let raw_page_len = page.collection.len();
 
             let mut kept: Vec<Like> = if tracks_only {
@@ -682,6 +683,74 @@ impl Client {
         );
 
         Ok(out)
+    }
+
+    // ---- playlists ------------------------------------------------------
+
+    /// Open an audio stream for every track in a playlist.
+    ///
+    /// The direct analogue of the node package's `downloadPlaylist`. Tracks that
+    /// fail keep their error rather than sinking the whole call, so the result is
+    /// one entry per track in playlist order.
+    ///
+    /// Each returned stream holds an open connection until it is consumed or
+    /// dropped. For a large playlist, prefer walking [`Client::set`] yourself and
+    /// calling [`Client::download_track`] one track at a time.
+    pub async fn download_playlist(
+        &self,
+        url: &str,
+        opts: &DownloadOptions,
+        concurrency: usize,
+    ) -> Result<Vec<(Track, Result<AudioStream>)>> {
+        use futures_util::stream::{self, StreamExt};
+
+        let set = self.set(url).await?;
+
+        let opened = stream::iter(set.tracks)
+            .map(|track| async move {
+                let audio = self.download_track(&track, opts).await;
+                (track, audio)
+            })
+            .buffered(concurrency.clamp(1, 32))
+            .collect::<Vec<_>>()
+            .await;
+
+        Ok(opened)
+    }
+
+    /// Stream audio straight from a transcoding's lookup url, with no `Transcoding`
+    /// object in hand.
+    ///
+    /// The analogue of the node package's `fromURL`. The protocol is inferred from
+    /// the url the same way that package infers it — `SoundCloud` spells it out in
+    /// the path — so prefer [`Client::stream_transcoding`] whenever the real
+    /// transcoding is available.
+    pub async fn stream_from_transcoding_url(
+        &self,
+        transcoding_url: &str,
+        filename: impl Into<String>,
+    ) -> Result<AudioStream> {
+        let protocol = if transcoding_url.contains("/progressive") {
+            Protocol::Progressive
+        } else {
+            Protocol::Hls
+        };
+
+        let transcoding = Transcoding {
+            url: transcoding_url.to_string(),
+            preset: String::new(),
+            duration: None,
+            snipped: false,
+            quality: None,
+            format: crate::model::TranscodingFormat {
+                protocol,
+                // Unknown without the track payload; the caller names the file.
+                mime_type: "audio/mpeg".to_string(),
+            },
+        };
+
+        self.stream_transcoding(&transcoding, filename.into(), None)
+            .await
     }
 
     // ---- search & discovery (thin wrappers over api-v2) ------------------

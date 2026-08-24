@@ -24,3 +24,7 @@ url.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[example]]
+name = "playlist"
+path = "examples/playlist.rs"

@@ -187,16 +187,46 @@ should not turn into an unbounded number of upstream ones.
 
 ## Parity with the Node package
 
-Everything is ported: `download`, `downloadFormat`, `getInfo`, `getTrackInfoByID`,
-`getSetInfo`, `downloadPlaylist`, `search`, `related`, `getLikes`, `getUser`,
-`filterMedia`, the url helpers, and `soundcloud-key-fetch`'s `fetchKey` / `keyIsValid`.
+Every public method of the `SCDL` class and every module-level export has an
+equivalent:
 
-Two bugs in the original are *not* reproduced: `fromMediaObj` tested the truthiness of
-its `validatemedia` function instead of calling it, and `isURL`'s mobile branch indexed
-the match of the wrong regex.
+| Node | Rust |
+| --- | --- |
+| `download`, `downloadFormat` | `download`, `download_with`, `download_track` |
+| `getInfo`, `getTrackInfoByID` | `track`, `tracks_by_id` |
+| `getSetInfo` | `set` (plus `hydrate_set`) |
+| `downloadPlaylist` | `download_playlist` |
+| `search`, `related` | `search`, `related` |
+| `getLikes` | `likes`, `likes_raw`, `likes_for_profile` |
+| `getUser` | `user` |
+| `filterMedia` | `filter_media` |
+| `fromMediaObj`, `fromURL` | `stream_transcoding`, `stream_from_transcoding_url` |
+| `getMediaURL` | `media_url` |
+| `getClientID`, `setClientID` | `client_id`, `set_client_id`, `verify_client_id` |
+| `prepareURL`, `isValidUrl`, `isPlaylistURL`, … | `prepare_url`, `is_valid_url`, `is_playlist_url`, … |
+| `setAxiosInstance` | `ClientBuilder::http_client` (build time, not a runtime setter) |
+| `kindMismatchError` | `Error::KindMismatch` |
+
+Three deliberate differences:
+
+- `search({nextHref})` and `getLikes({nextHref})` take no dedicated cursor argument.
+  The generic `next_page::<T>(href)` resumes any paginated endpoint, so a separate
+  parameter per endpoint would only duplicate it.
+- `fromMediaObjBase` / `fromURLBase` are dependency-injection seams that exist so the
+  JS tests can substitute fetchers. The Rust tests exercise the pure logic directly, so
+  the seams have nothing to do.
+- Two bugs in the original are not reproduced: `fromMediaObj` tested the truthiness of
+  its `validatemedia` function instead of calling it, and `isURL`'s mobile branch
+  indexed the match of the wrong regex.
 
 For endpoints with no wrapper, `Client::api_get` and `Client::next_page` reach any
 api-v2 path directly.
+
+## Examples
+
+```sh
+cargo run -p soundclaude --example playlist -- <playlist-url>
+```
 
 ## Legal
 

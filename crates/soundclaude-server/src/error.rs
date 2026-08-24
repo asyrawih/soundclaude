@@ -66,6 +66,9 @@ impl From<soundclaude::Error> for ApiError {
             E::Status { status, .. } if (500..600).contains(status) => {
                 (StatusCode::BAD_GATEWAY, "upstream_error")
             }
+            // Asking for likes and being handed something else means the upstream
+            // response did not match the request, not that the caller erred.
+            E::KindMismatch { .. } => (StatusCode::BAD_GATEWAY, "upstream_kind_mismatch"),
             E::Status { .. } | E::MissingMediaUrl(_) | E::Hls(_) => {
                 (StatusCode::BAD_GATEWAY, "upstream_error")
             }

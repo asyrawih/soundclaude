@@ -63,6 +63,26 @@ impl Likes {
     }
 }
 
+/// The `kind` every entry in a likes collection must carry.
+pub(crate) const LIKE_KIND: &str = "like";
+
+/// Reject a page that is not actually a likes collection.
+///
+/// The endpoint returning some other resource means the request was built wrong,
+/// and silently folding it into the results would hide that.
+pub(crate) fn validate_kinds(page: &[Like]) -> crate::Result<()> {
+    if let Some(odd) = page
+        .iter()
+        .find(|l| !l.kind.is_empty() && l.kind != LIKE_KIND)
+    {
+        return Err(crate::Error::KindMismatch {
+            expected: LIKE_KIND,
+            received: odd.kind.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// How many entries to ask for on the next request.
 ///
 /// `remaining` of `None` means "everything", which is just the biggest page the
@@ -109,6 +129,23 @@ mod tests {
         assert!(!should_stop(None, 200, Some("https://x")));
         // A page thinned by filtering out liked playlists must not end the walk.
         assert!(!should_stop(Some(50), 200, Some("https://x")));
+    }
+
+    #[test]
+    fn rejects_a_collection_of_the_wrong_kind() {
+        let like: Like = serde_json::from_value(serde_json::json!({
+            "kind": "like", "track": { "id": 1, "kind": "track" }
+        }))
+        .unwrap();
+        assert!(validate_kinds(&[like]).is_ok());
+
+        let wrong: Like =
+            serde_json::from_value(serde_json::json!({ "kind": "track-repost" })).unwrap();
+        assert!(validate_kinds(&[wrong]).is_err());
+
+        // An absent kind is tolerated rather than treated as a mismatch.
+        let bare: Like = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(validate_kinds(&[bare]).is_ok());
     }
 
     #[test]

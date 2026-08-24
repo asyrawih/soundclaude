@@ -62,6 +62,14 @@ pub enum Error {
     #[error("hls: {0}")]
     Hls(String),
 
+    /// A collection held a resource of an unexpected `kind`, which means the
+    /// endpoint returned something other than what was asked for.
+    #[error("expected a resource of kind `{expected}`, received `{received}`")]
+    KindMismatch {
+        expected: &'static str,
+        received: String,
+    },
+
     #[error("{0}")]
     Other(String),
 }
