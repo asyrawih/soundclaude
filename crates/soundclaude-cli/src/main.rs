@@ -3,7 +3,9 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use soundclaude::model::Availability;
 use soundclaude::{Client, DownloadOptions, Format, Protocol, Track};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -393,6 +395,46 @@ async fn get(
     Ok(())
 }
 
+/// Playlist tracks paired with their original position, so numbered filenames still
+/// reflect the playlist even after the unavailable ones are filtered out.
+type NumberedTracks = Vec<(usize, Track)>;
+
+/// Split a playlist into what can be downloaded and what cannot, reporting the
+/// latter as one grouped line.
+///
+/// A track that is private, deleted, region blocked, or served with no media is not
+/// a failure — it is simply not on offer, and a real playlist is full of them.
+/// Listing them one per line would bury the actual work.
+fn triage(tracks: Vec<Track>) -> (NumberedTracks, NumberedTracks) {
+    let (downloadable, skipped): (NumberedTracks, NumberedTracks) = tracks
+        .into_iter()
+        .enumerate()
+        .partition(|(_, t)| t.availability().is_downloadable());
+
+    if !skipped.is_empty() {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, track) in &skipped {
+            *counts.entry(track.availability().reason()).or_default() += 1;
+        }
+        let breakdown = counts
+            .iter()
+            .map(|(reason, n)| format!("{n} {reason}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("  skipping {} unavailable: {breakdown}", skipped.len());
+    }
+
+    let snippets = downloadable
+        .iter()
+        .filter(|(_, t)| t.availability() == Availability::SnippetOnly)
+        .count();
+    if snippets > 0 {
+        eprintln!("  {snippets} are preview-only; those files will be short");
+    }
+
+    (downloadable, skipped)
+}
+
 async fn playlist(
     client: &Client,
     url: &str,
@@ -409,62 +451,87 @@ async fn playlist(
         "{} — {total} track(s)",
         set.title.as_deref().unwrap_or("(untitled playlist)")
     );
+
+    let width = total.to_string().len();
+    let (downloadable, skipped) = triage(set.tracks);
+
+    if downloadable.is_empty() {
+        eprintln!("\nnothing in this playlist can be downloaded");
+        return Ok(());
+    }
+
+    eprintln!("  downloading {}", downloadable.len());
     tokio::fs::create_dir_all(dir).await?;
 
     let multi = Arc::new(MultiProgress::new());
-    let width = total.to_string().len();
+    let attempted = downloadable.len();
 
-    let results: Vec<(String, Result<PathBuf>)> =
-        futures_util::stream::iter(set.tracks.into_iter().enumerate())
-            .map(|(idx, track)| {
-                let client = client.clone();
-                let opts = opts.clone();
-                let dir = dir.to_path_buf();
-                let multi = Arc::clone(&multi);
+    let results: Vec<(String, Result<PathBuf>)> = futures_util::stream::iter(downloadable)
+        .map(|(idx, track)| {
+            let client = client.clone();
+            let opts = opts.clone();
+            let dir = dir.to_path_buf();
+            let multi = Arc::clone(&multi);
 
-                async move {
-                    let name = track.display_name();
-                    let outcome = async {
-                        let audio = client.download_track(&track, &opts).await?;
-                        let filename = if number {
-                            format!("{:0width$} - {}", idx + 1, audio.filename, width = width)
-                        } else {
-                            audio.filename.clone()
-                        };
-                        let path = dir.join(&filename);
+            async move {
+                let name = track.display_name();
+                let outcome = async {
+                    let audio = client.download_track(&track, &opts).await?;
+                    let filename = if number {
+                        format!("{:0width$} - {}", idx + 1, audio.filename, width = width)
+                    } else {
+                        audio.filename.clone()
+                    };
+                    let path = dir.join(&filename);
 
-                        let bar = multi.add(progress_bar(audio.content_length, &filename));
-                        let written = save(audio, &path, &bar).await;
-                        bar.finish_and_clear();
-                        written?;
-                        Ok::<_, anyhow::Error>(path)
-                    }
-                    .await;
-
-                    (name, outcome)
+                    let bar = multi.add(progress_bar(audio.content_length, &filename));
+                    let written = save(audio, &path, &bar).await;
+                    bar.finish_and_clear();
+                    written?;
+                    Ok::<_, anyhow::Error>(path)
                 }
-            })
-            .buffer_unordered(jobs.max(1))
-            .collect()
-            .await;
+                .await;
 
-    let failed: Vec<_> = results
-        .iter()
-        .filter_map(|(name, r)| r.as_ref().err().map(|e| (name, e)))
-        .collect();
+                (name, outcome)
+            }
+        })
+        .buffer_unordered(jobs.max(1))
+        .collect()
+        .await;
 
-    eprintln!(
-        "\ndownloaded {}/{} track(s) into {}",
-        total - failed.len(),
-        total,
-        dir.display()
-    );
+    // A track can still turn out to be unavailable here: availability is judged from
+    // the playlist payload, and soundcloud can refuse at stream time regardless.
+    let mut failed = Vec::new();
+    let mut late_skips = 0usize;
+    for (name, outcome) in &results {
+        match outcome {
+            Ok(_) => {}
+            Err(err) => {
+                if err
+                    .downcast_ref::<soundclaude::Error>()
+                    .is_some_and(soundclaude::Error::is_unavailable)
+                {
+                    late_skips += 1;
+                } else {
+                    failed.push((name, err));
+                }
+            }
+        }
+    }
+
+    let saved = attempted - failed.len() - late_skips;
+    eprintln!("\ndownloaded {saved}/{attempted} into {}", dir.display());
+    let total_skipped = skipped.len() + late_skips;
+    if total_skipped > 0 {
+        eprintln!("  {total_skipped} skipped as unavailable");
+    }
     for (name, err) in &failed {
         eprintln!("  failed: {name}: {err}");
     }
 
-    if failed.len() == total && total > 0 {
-        bail!("every track failed");
+    // Unavailable tracks are not failures, so they must not decide the exit code.
+    if !failed.is_empty() && saved == 0 {
+        bail!("every track that could be downloaded failed");
     }
     Ok(())
 }

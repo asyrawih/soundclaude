@@ -550,6 +550,16 @@ impl Client {
         track: &Track,
         opts: &DownloadOptions,
     ) -> Result<AudioStream> {
+        // Decide up front rather than discovering it as an empty transcoding list
+        // three requests later, and say which kind of unavailable it is.
+        let availability = track.availability();
+        if !availability.is_downloadable() {
+            return Err(Error::TrackUnavailable {
+                id: track.id,
+                reason: availability,
+            });
+        }
+
         // The original file is only worth trying when no specific format was asked for.
         if opts.use_download_link
             && track.downloadable

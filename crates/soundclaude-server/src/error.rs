@@ -56,6 +56,12 @@ impl From<soundclaude::Error> for ApiError {
                 (StatusCode::UNPROCESSABLE_ENTITY, "no_media")
             }
             E::NotFound { .. } => (StatusCode::NOT_FOUND, "not_found"),
+            // The track exists but is not ours to serve; a different client_id would
+            // not change that, so this is passed through rather than retried.
+            E::Forbidden { .. } => (StatusCode::FORBIDDEN, "upstream_forbidden"),
+            // Nothing is wrong with the request — the track simply cannot be
+            // downloaded, which a client walking a playlist should skip over.
+            E::TrackUnavailable { .. } => (StatusCode::UNPROCESSABLE_ENTITY, "track_unavailable"),
             // The caller's client_id is fine — ours went stale, so this is on us.
             E::Unauthorized { .. } => (StatusCode::BAD_GATEWAY, "upstream_unauthorized"),
             E::ClientIdNotFound => (StatusCode::BAD_GATEWAY, "client_id_unavailable"),
@@ -99,6 +105,19 @@ mod tests {
         // A rotated client_id is our problem to fix, not the caller's.
         let unauthorized: ApiError = soundclaude::Error::Unauthorized { url: "x".into() }.into();
         assert_eq!(unauthorized.status, StatusCode::BAD_GATEWAY);
+
+        // An unavailable track is not a caller error and not an upstream fault.
+        let gone: ApiError = soundclaude::Error::TrackUnavailable {
+            id: 1,
+            reason: soundclaude::model::Availability::Withheld,
+        }
+        .into();
+        assert_eq!(gone.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(gone.kind, "track_unavailable");
+
+        // 403 must not be reported as an auth problem the way 401 is.
+        let forbidden: ApiError = soundclaude::Error::Forbidden { url: "x".into() }.into();
+        assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
 
         let hls: ApiError = soundclaude::Error::Hls("boom".into()).into();
         assert_eq!(hls.status, StatusCode::BAD_GATEWAY);

@@ -15,7 +15,10 @@ pub(crate) async fn check(res: reqwest::Response) -> Result<reqwest::Response> {
 
     let url = res.url().to_string();
     match status.as_u16() {
-        401 | 403 => Err(Error::Unauthorized { url }),
+        401 => Err(Error::Unauthorized { url }),
+        // Not folded in with 401: a forbidden resource stays forbidden no matter
+        // which client_id asks for it.
+        403 => Err(Error::Forbidden { url }),
         404 => Err(Error::NotFound { url }),
         status => {
             let body = res.text().await.unwrap_or_default();

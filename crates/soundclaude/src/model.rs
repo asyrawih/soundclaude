@@ -218,6 +218,51 @@ pub struct User {
 
 /// A `SoundCloud` track. Most fields are optional because `/tracks?ids=` and
 /// `/resolve` return different subsets, and playlist payloads are sparser still.
+/// Whether a track can actually be downloaded, decided from its payload alone.
+///
+/// `SoundCloud` expresses "you cannot have this" several different ways, and a
+/// playlist of any size usually contains all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
+    /// Full audio is available.
+    Available,
+    /// Preview only — soundcloud serves a short snippet, not the whole track.
+    SnippetOnly,
+    /// The api returned the track but with no playable media at all. By far the
+    /// most common form of "not downloadable" in real playlists.
+    NoMedia,
+    /// The api declined to return the track, leaving the playlist's stub behind:
+    /// private, deleted, or hidden from this client.
+    Withheld,
+    /// Explicitly blocked, whether by geography or by rights.
+    Blocked,
+}
+
+impl Availability {
+    /// Whether attempting a download is worthwhile. A snippet still yields bytes,
+    /// so it counts — callers that care should check for it explicitly.
+    pub fn is_downloadable(self) -> bool {
+        matches!(self, Availability::Available | Availability::SnippetOnly)
+    }
+
+    /// Short reason suitable for grouping many tracks in a summary.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Availability::Available => "available",
+            Availability::SnippetOnly => "preview only",
+            Availability::NoMedia => "no downloadable media",
+            Availability::Withheld => "private, deleted, or unavailable here",
+            Availability::Blocked => "blocked in this region or by rights",
+        }
+    }
+}
+
+impl fmt::Display for Availability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Track {
     pub id: u64,
@@ -296,6 +341,27 @@ impl Track {
     /// is hydrated via `/tracks?ids=`.
     pub fn is_hydrated(&self) -> bool {
         self.title.is_some()
+    }
+
+    /// Classify whether this track can be downloaded, without making a request.
+    pub fn availability(&self) -> Availability {
+        // A stub still carrying only its id means `/tracks?ids=` declined to
+        // return it, which is what private and deleted tracks look like.
+        if !self.is_hydrated() {
+            return Availability::Withheld;
+        }
+        if self.policy.as_deref() == Some("BLOCK") || self.streamable == Some(false) {
+            return Availability::Blocked;
+        }
+
+        let transcodings = self.transcodings();
+        if transcodings.is_empty() {
+            return Availability::NoMedia;
+        }
+        if self.policy.as_deref() == Some("SNIP") || transcodings.iter().all(|t| t.snipped) {
+            return Availability::SnippetOnly;
+        }
+        Availability::Available
     }
 
     pub fn transcodings(&self) -> &[Transcoding] {
@@ -439,5 +505,84 @@ mod tests {
         assert_eq!("mp3".parse::<Format>().unwrap(), Format::Mp3);
         assert_eq!("m4a".parse::<Format>().unwrap(), Format::Aac);
         assert!("flac".parse::<Format>().is_err());
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+
+    fn track(value: serde_json::Value) -> Track {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn with_media() -> serde_json::Value {
+        serde_json::json!([{
+            "url": "https://api-v2.soundcloud.com/media/x/stream/progressive",
+            "preset": "mp3_0_0", "snipped": false,
+            "format": { "protocol": "progressive", "mime_type": "audio/mpeg" }
+        }])
+    }
+
+    #[test]
+    fn a_playable_track_is_available() {
+        let t = track(serde_json::json!({
+            "id": 1, "kind": "track", "title": "ok",
+            "media": { "transcodings": with_media() }
+        }));
+        assert_eq!(t.availability(), Availability::Available);
+        assert!(t.availability().is_downloadable());
+    }
+
+    #[test]
+    fn an_unhydrated_stub_is_withheld() {
+        let t = track(serde_json::json!({ "id": 1, "kind": "track" }));
+        assert_eq!(t.availability(), Availability::Withheld);
+        assert!(!t.availability().is_downloadable());
+    }
+
+    #[test]
+    fn an_empty_transcoding_list_is_the_common_case() {
+        let t = track(serde_json::json!({
+            "id": 1, "kind": "track", "title": "gone",
+            "media": { "transcodings": [] }
+        }));
+        assert_eq!(t.availability(), Availability::NoMedia);
+        assert!(!t.availability().is_downloadable());
+    }
+
+    #[test]
+    fn blocked_beats_a_missing_media_list() {
+        let t = track(serde_json::json!({
+            "id": 1, "kind": "track", "title": "blocked",
+            "policy": "BLOCK", "media": { "transcodings": [] }
+        }));
+        assert_eq!(t.availability(), Availability::Blocked);
+
+        let unstreamable = track(serde_json::json!({
+            "id": 1, "kind": "track", "title": "no", "streamable": false,
+            "media": { "transcodings": with_media() }
+        }));
+        assert_eq!(unstreamable.availability(), Availability::Blocked);
+    }
+
+    #[test]
+    fn snippets_are_downloadable_but_flagged() {
+        let by_policy = track(serde_json::json!({
+            "id": 1, "kind": "track", "title": "snip", "policy": "SNIP",
+            "media": { "transcodings": with_media() }
+        }));
+        assert_eq!(by_policy.availability(), Availability::SnippetOnly);
+        // Still worth downloading — it just is not the whole track.
+        assert!(by_policy.availability().is_downloadable());
+
+        let all_snipped = track(serde_json::json!({
+            "id": 1, "kind": "track", "title": "snip",
+            "media": { "transcodings": [{
+                "url": "https://x/stream/progressive", "preset": "p", "snipped": true,
+                "format": { "protocol": "progressive", "mime_type": "audio/mpeg" }
+            }] }
+        }));
+        assert_eq!(all_snipped.availability(), Availability::SnippetOnly);
     }
 }

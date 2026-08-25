@@ -75,6 +75,28 @@ println!("{} ({})", audio.filename, audio.mime_type);
 `AudioStream` implements `Stream<Item = Result<Bytes>>`, so it can be piped anywhere
 rather than buffered: `save`, `write_to`, `bytes`, or `into_stream`.
 
+### Unavailable tracks
+
+A real playlist is full of tracks you cannot download: private, deleted, region
+blocked, preview-only, or served with no media at all. `Track::availability()`
+classifies each one from its payload, without a request:
+
+```rust
+for track in &set.tracks {
+    let state = track.availability();
+    if state.is_downloadable() {
+        scdl.download_track(track, &opts).await?.save(&path).await?;
+    } else {
+        println!("skipping {}: {state}", track.display_name());
+    }
+}
+```
+
+`download_track` refuses such a track up front with `Error::TrackUnavailable` rather
+than failing three requests later, and `Error::is_unavailable()` separates "not on
+offer" from "the attempt went wrong". `scdl playlist` uses this to skip them and keep
+going, so unavailable tracks never decide the exit code.
+
 Playlists resolve with their track stubs filled in:
 
 ```rust
@@ -196,6 +218,11 @@ A track exposes several *transcodings*, each with a protocol:
 
 Encrypted playlists (`EXT-X-KEY` with a method other than `NONE`) are rejected rather
 than silently producing noise.
+
+`401` and `403` are kept apart. A `401` means the scraped `client_id` rotated, so
+re-scraping fixes it. A `403` means that particular track is off limits, and retrying
+with a new id would only spend a homepage fetch and a bundle scrape per track before
+failing anyway.
 
 Watch out for `audio/mpegurl`: it is the `abr_sq` adaptive-bitrate playlist, *not*
 mpeg audio, despite the shared mime prefix.

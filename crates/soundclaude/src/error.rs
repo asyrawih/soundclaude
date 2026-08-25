@@ -28,6 +28,12 @@ pub enum Error {
     #[error("unauthorized (401) for {url} — is the client_id correct?")]
     Unauthorized { url: String },
 
+    /// Distinct from [`Error::Unauthorized`] on purpose: 401 means the `client_id` is
+    /// wrong and re-scraping fixes it, while 403 means this particular resource is
+    /// off limits and a new `client_id` would change nothing.
+    #[error("forbidden (403) for {url} — this resource is not available to you")]
+    Forbidden { url: String },
+
     #[error("not found (404) for {url} — the track may be private, or the url is wrong")]
     NotFound { url: String },
 
@@ -52,6 +58,15 @@ pub enum Error {
 
     #[error("the track has no playable media transcodings: {0}")]
     NoTranscodings(String),
+
+    /// The track cannot be downloaded at all — private, deleted, region blocked, or
+    /// served without any media. Callers walking a playlist should skip these rather
+    /// than treat them as failures.
+    #[error("track {id} cannot be downloaded: {reason}")]
+    TrackUnavailable {
+        id: u64,
+        reason: crate::model::Availability,
+    },
 
     #[error("no transcoding matched the requested {0}")]
     NoMatchingTranscoding(Requested),
@@ -94,13 +109,26 @@ impl fmt::Display for Requested {
 
 impl Error {
     /// True for errors where retrying with a fresh `client_id` is worth a shot.
+    ///
+    /// Deliberately excludes 403: re-scraping on a forbidden track would spend a
+    /// homepage fetch plus a bundle scrape per track, and still fail.
     pub fn is_auth(&self) -> bool {
         matches!(self, Error::Unauthorized { .. })
+    }
+
+    /// True when the track simply cannot be downloaded, as opposed to the attempt
+    /// having gone wrong. Skip these; do not report them as failures.
+    pub fn is_unavailable(&self) -> bool {
+        matches!(
+            self,
+            Error::TrackUnavailable { .. } | Error::NoTranscodings(_) | Error::Forbidden { .. }
+        )
     }
 
     pub fn status(&self) -> Option<u16> {
         match self {
             Error::Unauthorized { .. } => Some(401),
+            Error::Forbidden { .. } => Some(403),
             Error::NotFound { .. } => Some(404),
             Error::Status { status, .. } => Some(*status),
             Error::Http(e) => e.status().map(|s| s.as_u16()),
