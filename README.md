@@ -150,6 +150,33 @@ HLS is chunked because the total size isn't known until the last segment lands.
 Errors come back as `{"error":{"kind":…,"message":…}}`; a stale `client_id` on our
 side is a `502`, not a `4xx`.
 
+### API documentation
+
+| file | what it is |
+| --- | --- |
+| `docs/openapi.yaml` | OpenAPI 3.1 spec — the source of truth for every route, parameter, and error |
+| `docs/soundclaude.postman_collection.json` | Postman collection, 14 requests across 4 folders |
+
+Import either into Postman. The collection ships variables (`baseUrl`, `trackUrl`,
+`playlistUrl`, `profileUrl`, `trackId`, `userId`) pre-filled with public, freely
+licensed examples, so every request runs as-is against a local server. It also
+includes the two failure cases worth handling — a `422 track_unavailable` and a
+`400 invalid_url` — because those shapes matter more than the happy path when you
+are walking a playlist.
+
+Run it headless as a deployment smoke test:
+
+```sh
+newman run docs/soundclaude.postman_collection.json --env-var baseUrl=http://localhost:8080
+```
+
+Or browse the spec:
+
+```sh
+docker run --rm -p 8081:8080 -e SWAGGER_JSON=/spec/openapi.yaml \
+  -v "$PWD/docs:/spec" swaggerapi/swagger-ui
+```
+
 Env: `BIND` or `PORT`, `SOUNDCLOUD_CLIENT_ID`, `ALLOW_SCRAPE_FALLBACK`, `SOUNDCLAUDE_CACHE`,
 `CORS_ALLOW_ORIGIN` (defaults to permissive), `RUST_LOG`.
 

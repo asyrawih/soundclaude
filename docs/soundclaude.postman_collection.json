@@ -1,0 +1,551 @@
+{
+  "info": {
+    "_postman_id": "7b3f0c9e-1d24-4a58-9f6b-5c8e2a41d0f3",
+    "name": "soundclaude-server",
+    "description": "HTTP front end for the soundclaude library: SoundCloud metadata as JSON and audio as a streaming response.\n\nEvery route is GET, takes query parameters, and needs no authentication \u2014 the server scrapes and manages its own SoundCloud client_id.\n\nSet `baseUrl` to point at your server. `trackUrl`, `profileUrl`, `playlistUrl`, `trackId`, and `userId` are pre-filled with public, freely licensed examples so every request runs as-is.\n\nDownloading is governed by SoundCloud's terms of service and by the rights of whoever made the track. This is a transport, not a licence.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "trackUrl",
+      "value": "https://soundcloud.com/pipe-choir-2/p-c-iii-trampled-creative-commons-instrumental",
+      "type": "string"
+    },
+    {
+      "key": "playlistUrl",
+      "value": "https://soundcloud.com/creo/sets/creative-commons-cc-by",
+      "type": "string"
+    },
+    {
+      "key": "profileUrl",
+      "value": "https://soundcloud.com/creo",
+      "type": "string"
+    },
+    {
+      "key": "trackId",
+      "value": "299096587",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "173476",
+      "type": "string"
+    }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Runs after every request in this collection, so `newman run` doubles",
+          "// as a smoke test of a deployment.",
+          "pm.test('server did not fault', function () {",
+          "    pm.expect(pm.response.code, 'a 5xx means the service or soundcloud broke')",
+          "        .to.be.below(500);",
+          "});",
+          "",
+          "// Failures share one documented shape; match on `kind`, never on `message`.",
+          "if (pm.response.code >= 400 && pm.response.headers.get('Content-Type') &&",
+          "    pm.response.headers.get('Content-Type').includes('json')) {",
+          "    pm.test('error follows the documented shape', function () {",
+          "        const body = pm.response.json();",
+          "        pm.expect(body).to.have.property('error');",
+          "        pm.expect(body.error).to.have.property('kind');",
+          "        pm.expect(body.error).to.have.property('message');",
+          "    });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Meta",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ],
+              "query": []
+            },
+            "description": "Answers as soon as the process is serving, whether or not a client_id has been obtained yet. Use it as a liveness probe."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Metadata",
+      "item": [
+        {
+          "name": "Resolve any URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/resolve?url={{trackUrl}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "resolve"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "{{trackUrl}}",
+                  "description": "A soundcloud.com URL. Mobile links (m.soundcloud.com) and app share links (soundcloud.app.goo.gl) are normalized automatically."
+                }
+              ]
+            },
+            "description": "Returns the raw /resolve payload, discriminated by its `kind` field.\n\nFor a playlist this returns SoundCloud's own payload, which means only the first few tracks are complete objects and the rest are bare {id} stubs. Use GET /v1/set when you want them filled in."
+          },
+          "response": []
+        },
+        {
+          "name": "Track",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/track?url={{trackUrl}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "track"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "{{trackUrl}}",
+                  "description": "A soundcloud.com URL. Mobile links (m.soundcloud.com) and app share links (soundcloud.app.goo.gl) are normalized automatically."
+                }
+              ]
+            },
+            "description": "Track metadata.\n\nCheck `media.transcodings` here before forcing a format on /v1/stream \u2014 not every track offers every format. An empty transcodings list means the track is not downloadable at all."
+          },
+          "response": []
+        },
+        {
+          "name": "Playlist / album",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/set?url={{playlistUrl}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "set"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "{{playlistUrl}}",
+                  "description": "A playlist or album URL."
+                }
+              ]
+            },
+            "description": "Unlike /v1/resolve, every track is a complete object: stubs are hydrated through /tracks?ids= in batches of 50 and the original order is preserved. A 500-track playlist therefore costs several upstream requests."
+          },
+          "response": []
+        },
+        {
+          "name": "User profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/user?url={{profileUrl}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "user"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "{{profileUrl}}",
+                  "description": "A SoundCloud profile URL."
+                }
+              ]
+            },
+            "description": "User profile. The `id` here is what /v1/likes wants."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Discovery",
+      "item": [
+        {
+          "name": "Search",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/search?q=lofi chill&kind=tracks&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "lofi chill",
+                  "description": "The query. Must not be empty."
+                },
+                {
+                  "key": "kind",
+                  "value": "tracks",
+                  "description": "One of: tracks, users, albums, playlists, all. Default tracks."
+                },
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "description": "Page size, clamped to 1..200. Default 20."
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Default 0.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Search SoundCloud. Item shape in `collection` follows `kind`.\n\nOut-of-range `limit` values are clamped rather than rejected; an unknown `kind` is a 400."
+          },
+          "response": []
+        },
+        {
+          "name": "Related tracks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/related?id={{trackId}}&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "related"
+              ],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "{{trackId}}",
+                  "description": "Numeric track id, from /v1/track."
+                },
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "description": "Clamped to 1..200. Default 20."
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Default 0.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Tracks SoundCloud considers related to this one."
+          },
+          "response": []
+        },
+        {
+          "name": "Likes by user id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/likes?id={{userId}}&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "likes"
+              ],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "{{userId}}",
+                  "description": "Numeric user id. Wins over `url` if both are given."
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "Entries to collect, clamped to 1..500. Default 20."
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Default 0.",
+                  "disabled": true
+                },
+                {
+                  "key": "playlists",
+                  "value": "false",
+                  "description": "Include liked playlists too. Default false.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Pagination is handled server-side: the walk follows next_href until `limit` entries are collected or the likes run out, and reports the page count.\n\n`limit` counts *kept* entries. With playlists=false a page made largely of liked playlists contributes little and the walk continues \u2014 which is why a small limit can still report more than one page."
+          },
+          "response": []
+        },
+        {
+          "name": "Likes by profile URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/likes?url={{profileUrl}}&limit=10&playlists=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "likes"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "{{profileUrl}}",
+                  "description": "Resolved to a user id first, costing one extra upstream request."
+                },
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "description": "Clamped to 1..500."
+                },
+                {
+                  "key": "playlists",
+                  "value": "true",
+                  "description": "Include liked playlists alongside liked tracks."
+                }
+              ]
+            },
+            "description": "Same endpoint, addressed by profile URL instead of id.\n\nSupplying neither `id` nor `url` is a 400."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Audio",
+      "item": [
+        {
+          "name": "Stream (auto)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stream?url={{trackUrl}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "stream"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "{{trackUrl}}",
+                  "description": "A soundcloud.com URL. Mobile links (m.soundcloud.com) and app share links (soundcloud.app.goo.gl) are normalized automatically."
+                },
+                {
+                  "key": "format",
+                  "value": "mp3",
+                  "description": "mp3 | opus | aac. Omit to let the server choose.",
+                  "disabled": true
+                },
+                {
+                  "key": "protocol",
+                  "value": "progressive",
+                  "description": "progressive | hls. Omit to let the server choose.",
+                  "disabled": true
+                },
+                {
+                  "key": "no_direct",
+                  "value": "true",
+                  "description": "Skip the artist's original file even when offered.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Audio with Content-Disposition: inline \u2014 point an <audio> element at it.\n\nLeft alone, the server tries the artist's original file first, then prefers a progressive mp3 transcoding."
+          },
+          "response": []
+        },
+        {
+          "name": "Stream (force HLS)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stream?url={{trackUrl}}&protocol=hls&format=mp3&no_direct=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "stream"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "{{trackUrl}}",
+                  "description": "A soundcloud.com URL. Mobile links (m.soundcloud.com) and app share links (soundcloud.app.goo.gl) are normalized automatically."
+                },
+                {
+                  "key": "protocol",
+                  "value": "hls",
+                  "description": "Force the segmented path."
+                },
+                {
+                  "key": "format",
+                  "value": "mp3",
+                  "description": "mp3 | opus | aac."
+                },
+                {
+                  "key": "no_direct",
+                  "value": "true",
+                  "description": "Skip the original file so the transcoding is really used."
+                }
+              ]
+            },
+            "description": "Forces the HLS path: segments are fetched concurrently, emitted in playlist order, and concatenated on the fly.\n\nNo Content-Length here \u2014 the total is unknown until the last segment lands, so the response is chunked. The bytes are identical to the progressive transcoding's."
+          },
+          "response": []
+        },
+        {
+          "name": "Download",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/download?url={{trackUrl}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "download"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "{{trackUrl}}",
+                  "description": "A soundcloud.com URL. Mobile links (m.soundcloud.com) and app share links (soundcloud.app.goo.gl) are normalized automatically."
+                },
+                {
+                  "key": "format",
+                  "value": "mp3",
+                  "description": "mp3 | opus | aac.",
+                  "disabled": true
+                },
+                {
+                  "key": "protocol",
+                  "value": "progressive",
+                  "description": "progressive | hls.",
+                  "disabled": true
+                },
+                {
+                  "key": "no_direct",
+                  "value": "true",
+                  "description": "Skip the artist's original file.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Identical to /v1/stream apart from Content-Disposition: attachment, which makes a browser save the file. Use 'Send and Download' in Postman.\n\nThe filename is sent twice: an ASCII-folded `filename=` for old clients and an RFC 5987 `filename*=` that survives non-ASCII titles."
+          },
+          "response": []
+        },
+        {
+          "name": "Unavailable track (422)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/download?url=https://soundcloud.com/marioofficial/let-me-love-you-2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "download"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "https://soundcloud.com/marioofficial/let-me-love-you-2",
+                  "description": "A track blocked by region or rights."
+                }
+              ]
+            },
+            "description": "Shows the shape you must handle when walking a playlist: nothing is wrong with the request, the track simply cannot be downloaded.\n\nExpect 422 with kind `track_unavailable`. Skip these; do not count them as failures. (Whether this specific track is blocked depends on where you are.)"
+          },
+          "response": []
+        },
+        {
+          "name": "Bad URL (400)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/track?url=https://example.com/not-soundcloud",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "track"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "https://example.com/not-soundcloud",
+                  "description": "Not a SoundCloud URL."
+                }
+              ]
+            },
+            "description": "Expect 400 with kind `invalid_url`, in the documented error shape."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

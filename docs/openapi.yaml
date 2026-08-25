@@ -1,0 +1,587 @@
+openapi: 3.1.0
+
+info:
+  title: soundclaude-server
+  version: 0.1.0
+  description: |
+    HTTP front end for the `soundclaude` library: SoundCloud metadata as JSON and
+    audio as a streaming response.
+
+    Every route is `GET`, takes its input as query parameters, and needs no
+    authentication — the server scrapes and manages its own SoundCloud `client_id`.
+
+    Downloading is governed by SoundCloud's terms of service and by the rights of
+    whoever made the track. This is a transport, not a licence.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local server, default port
+
+tags:
+  - name: meta
+    description: Service health
+  - name: metadata
+    description: Tracks, playlists, and users
+  - name: discovery
+    description: Search, related tracks, and likes
+  - name: audio
+    description: Audio streaming and download
+
+paths:
+  /health:
+    get:
+      tags: [meta]
+      summary: Liveness probe
+      description: Answers as soon as the process is serving, whether or not a client_id has been obtained yet.
+      responses:
+        "200":
+          description: The service is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, examples: ["ok"] }
+                  version: { type: string, examples: ["0.1.0"] }
+
+  /v1/resolve:
+    get:
+      tags: [metadata]
+      summary: Resolve any SoundCloud URL
+      description: |
+        Returns the raw `/resolve` payload, discriminated by its `kind` field.
+
+        A playlist comes back exactly as SoundCloud sends it, which means only the
+        first few tracks are complete objects and the rest are bare `{ id }` stubs.
+        Use `/v1/set` when you want them filled in.
+      parameters:
+        - $ref: "#/components/parameters/Url"
+      responses:
+        "200":
+          description: Whatever the URL pointed at.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Track"
+                  - $ref: "#/components/schemas/Set"
+                  - $ref: "#/components/schemas/User"
+                discriminator:
+                  propertyName: kind
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/track:
+    get:
+      tags: [metadata]
+      summary: Track metadata
+      parameters:
+        - $ref: "#/components/parameters/Url"
+      responses:
+        "200":
+          description: The track.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Track" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/set:
+    get:
+      tags: [metadata]
+      summary: Playlist or album metadata
+      description: |
+        Unlike `/v1/resolve`, every track is a complete object: stubs are hydrated
+        through `/tracks?ids=` in batches of 50, and the original playlist order is
+        preserved. A 500-track playlist therefore costs several upstream requests.
+      parameters:
+        - $ref: "#/components/parameters/Url"
+      responses:
+        "200":
+          description: The playlist, tracks hydrated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Set" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/user:
+    get:
+      tags: [metadata]
+      summary: User profile
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: A SoundCloud profile URL.
+          schema: { type: string, format: uri }
+          example: https://soundcloud.com/creo
+      responses:
+        "200":
+          description: The user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/search:
+    get:
+      tags: [discovery]
+      summary: Search SoundCloud
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: The search query. Must not be empty.
+          schema: { type: string }
+          example: lofi chill
+        - name: kind
+          in: query
+          description: Which resource to search.
+          schema:
+            type: string
+            enum: [tracks, users, albums, playlists, all]
+            default: tracks
+        - name: limit
+          in: query
+          description: Page size. Values outside the range are clamped, not rejected.
+          schema: { type: integer, default: 20, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: One page of results. Item shape follows `kind`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedQuery" }
+        "400":
+          description: Empty `q`, or a `kind` outside the allowed set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/related:
+    get:
+      tags: [discovery]
+      summary: Tracks related to a track
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: Numeric track id, as returned by `/v1/track`.
+          schema: { type: integer, format: int64 }
+          example: 299096587
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: One page of related tracks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedQuery" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/likes:
+    get:
+      tags: [discovery]
+      summary: A user's likes
+      description: |
+        Pagination is handled server-side: the walk follows SoundCloud's `next_href`
+        until `limit` entries have been collected or the likes run out, and reports
+        how many pages that took.
+
+        `limit` counts *kept* entries. With `playlists=false` (the default) a page
+        made largely of liked playlists contributes little, so the walk continues —
+        which is why a small `limit` can still report more than one page.
+      parameters:
+        - name: id
+          in: query
+          description: Numeric user id. Supply this or `url`; `id` wins if both are given.
+          schema: { type: integer, format: int64 }
+          example: 173476
+        - name: url
+          in: query
+          description: A profile URL, resolved to a user id first (one extra upstream request).
+          schema: { type: string, format: uri }
+        - name: limit
+          in: query
+          description: |
+            How many entries to collect. Always capped server-side, unlike the
+            library, so one request cannot become an unbounded number of upstream ones.
+          schema: { type: integer, default: 20, minimum: 1, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: playlists
+          in: query
+          description: Include liked playlists alongside liked tracks.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: The collected likes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Likes" }
+        "400":
+          description: Neither `id` nor `url` was supplied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error:
+                  kind: bad_request
+                  message: "one of `id` or `url` is required"
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/stream:
+    get:
+      tags: [audio]
+      summary: Stream a track's audio
+      description: |
+        Audio is relayed as it arrives, not buffered first.
+
+        A progressive transcoding carries a `Content-Length`. HLS does not: the
+        segments are fetched concurrently, emitted in playlist order, and
+        concatenated on the fly, so the total is unknown until the last one lands
+        and the response is chunked.
+
+        Range requests are not supported — serving one would mean re-fetching from
+        upstream — so the response says `Accept-Ranges: none`. Identical to
+        `/v1/download` apart from `Content-Disposition`.
+      parameters:
+        - $ref: "#/components/parameters/Url"
+        - $ref: "#/components/parameters/Format"
+        - $ref: "#/components/parameters/Protocol"
+        - $ref: "#/components/parameters/NoDirect"
+      responses:
+        "200": { $ref: "#/components/responses/Audio" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unavailable" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "504": { $ref: "#/components/responses/Timeout" }
+
+  /v1/download:
+    get:
+      tags: [audio]
+      summary: Download a track's audio
+      description: Identical to `/v1/stream`, but sent as an attachment so a browser saves it.
+      parameters:
+        - $ref: "#/components/parameters/Url"
+        - $ref: "#/components/parameters/Format"
+        - $ref: "#/components/parameters/Protocol"
+        - $ref: "#/components/parameters/NoDirect"
+      responses:
+        "200": { $ref: "#/components/responses/Audio" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unavailable" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "504": { $ref: "#/components/responses/Timeout" }
+
+components:
+  parameters:
+    Url:
+      name: url
+      in: query
+      required: true
+      description: |
+        A `soundcloud.com` URL. Mobile links (`m.soundcloud.com`) and app share links
+        (`soundcloud.app.goo.gl`) are normalized automatically.
+      schema: { type: string, format: uri }
+      example: https://soundcloud.com/pipe-choir-2/p-c-iii-trampled-creative-commons-instrumental
+
+    Format:
+      name: format
+      in: query
+      description: |
+        Require this audio format. Omit to let the server choose, which prefers mp3.
+        Not every track offers every format — check `media.transcodings` from
+        `/v1/track` first; a format the track lacks returns 422.
+      schema:
+        type: string
+        enum: [mp3, opus, aac]
+
+    Protocol:
+      name: protocol
+      in: query
+      description: |
+        Require this delivery protocol. Omit to let the server choose, which prefers
+        progressive because it arrives in one response with a known length.
+      schema:
+        type: string
+        enum: [progressive, hls]
+
+    NoDirect:
+      name: no_direct
+      in: query
+      description: |
+        Skip the artist's original-file download even when the track offers one.
+        By default it is tried first, since it is the highest quality available.
+      schema: { type: boolean, default: false }
+
+  responses:
+    Audio:
+      description: The audio stream.
+      headers:
+        Content-Type:
+          description: The transcoding's mime type, or what the CDN reported for an original-file download.
+          schema: { type: string, examples: ["audio/mpeg"] }
+        Content-Length:
+          description: Present for progressive transcodings only; absent for HLS.
+          schema: { type: integer, format: int64 }
+        Content-Disposition:
+          description: |
+            Carries the suggested filename twice — an ASCII-folded `filename=` for old
+            clients and an RFC 5987 `filename*=` that survives non-ASCII titles.
+          schema: { type: string }
+        Accept-Ranges:
+          description: Always `none`; range requests are not supported.
+          schema: { type: string, examples: ["none"] }
+      content:
+        audio/mpeg:
+          schema: { type: string, format: binary }
+        audio/mp4:
+          schema: { type: string, format: binary }
+        audio/ogg:
+          schema: { type: string, format: binary }
+
+    BadRequest:
+      description: The request itself is wrong — a malformed URL, a missing parameter, or an unknown enum value.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              kind: invalid_url
+              message: "not a soundcloud url: https://example.com/x"
+
+    Forbidden:
+      description: |
+        SoundCloud refuses this particular resource. Deliberately not reported as an
+        auth problem: a different `client_id` would not change the answer.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    NotFound:
+      description: No such track, or no such route.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    Unavailable:
+      description: |
+        Nothing is wrong with the request — the track simply cannot be downloaded:
+        private, deleted, region blocked, or served with no media. A client walking a
+        playlist should skip these rather than treat them as failures.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              kind: track_unavailable
+              message: "track 1634469891 cannot be downloaded: blocked in this region or by rights"
+
+    UpstreamError:
+      description: SoundCloud failed or answered with something unusable.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+    Timeout:
+      description: SoundCloud did not answer in time.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      description: Every failure uses this shape.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [kind, message]
+          properties:
+            kind:
+              type: string
+              description: |
+                Stable machine-readable label. `4xx` kinds mean the request was wrong;
+                `5xx` kinds mean this service or SoundCloud was.
+              enum:
+                - bad_request
+                - invalid_url
+                - unresolvable_link
+                - not_a_track
+                - not_a_set
+                - not_found
+                - no_such_route
+                - upstream_forbidden
+                - no_media
+                - track_unavailable
+                - upstream_unauthorized
+                - upstream_error
+                - upstream_kind_mismatch
+                - upstream_malformed_json
+                - client_id_unavailable
+                - client_id_rejected
+                - upstream_timeout
+                - internal
+            message:
+              type: string
+              description: Human-readable detail. Do not match on this; match on `kind`.
+
+    TranscodingFormat:
+      type: object
+      properties:
+        protocol:
+          type: string
+          description: "`progressive` or `hls`; any other value is passed through unchanged."
+          examples: ["progressive"]
+        mime_type:
+          type: string
+          description: |
+            Beware `audio/mpegurl` — that is the `abr_sq` adaptive-bitrate playlist,
+            not mpeg audio, despite the shared prefix.
+          examples: ["audio/mpeg"]
+
+    Transcoding:
+      type: object
+      description: One playable rendition. `url` is a lookup endpoint, not the audio itself.
+      properties:
+        url: { type: string }
+        preset: { type: string, examples: ["mp3_0_0"] }
+        duration: { type: [integer, "null"], format: int64 }
+        snipped:
+          type: boolean
+          description: True when this rendition is a preview rather than the whole track.
+        quality: { type: [string, "null"] }
+        format: { $ref: "#/components/schemas/TranscodingFormat" }
+
+    User:
+      type: object
+      additionalProperties: true
+      required: [id]
+      properties:
+        id: { type: integer, format: int64 }
+        kind: { type: string, examples: ["user"] }
+        username: { type: string }
+        full_name: { type: [string, "null"] }
+        permalink_url: { type: [string, "null"] }
+        avatar_url: { type: [string, "null"] }
+        followers_count: { type: [integer, "null"] }
+        followings_count: { type: [integer, "null"] }
+        track_count: { type: [integer, "null"] }
+        verified: { type: [boolean, "null"] }
+
+    Track:
+      type: object
+      additionalProperties: true
+      required: [id]
+      properties:
+        id: { type: integer, format: int64 }
+        kind: { type: string, examples: ["track"] }
+        title: { type: [string, "null"] }
+        permalink_url: { type: [string, "null"] }
+        duration:
+          type: [integer, "null"]
+          description: Milliseconds.
+        genre: { type: [string, "null"] }
+        artwork_url: { type: [string, "null"] }
+        downloadable:
+          type: boolean
+          description: |
+            The artist offers the original file. Some tracks advertise this and then
+            404, so the server falls back to the transcodings.
+        has_downloads_left: { type: boolean }
+        streamable: { type: [boolean, "null"] }
+        policy:
+          type: [string, "null"]
+          description: |
+            `ALLOW` / `MONETIZE` are normal. `SNIP` means preview-only, and `BLOCK`
+            means region- or rights-blocked — both make the track undownloadable or
+            only partly so.
+          examples: ["ALLOW"]
+        playback_count: { type: [integer, "null"] }
+        likes_count: { type: [integer, "null"] }
+        user: { $ref: "#/components/schemas/User" }
+        media:
+          type: object
+          description: |
+            An empty `transcodings` list is the most common form of "not
+            downloadable" in a real playlist.
+          properties:
+            transcodings:
+              type: array
+              items: { $ref: "#/components/schemas/Transcoding" }
+
+    Set:
+      type: object
+      additionalProperties: true
+      required: [id]
+      properties:
+        id: { type: integer, format: int64 }
+        kind: { type: string, examples: ["playlist"] }
+        title: { type: [string, "null"] }
+        permalink_url: { type: [string, "null"] }
+        duration: { type: [integer, "null"] }
+        track_count: { type: [integer, "null"] }
+        is_album: { type: boolean }
+        secret_token: { type: [string, "null"] }
+        user: { $ref: "#/components/schemas/User" }
+        tracks:
+          type: array
+          items: { $ref: "#/components/schemas/Track" }
+
+    Like:
+      type: object
+      description: Exactly one of `track` or `playlist` is present.
+      properties:
+        created_at: { type: [string, "null"] }
+        kind: { type: string, examples: ["like"] }
+        track: { $ref: "#/components/schemas/Track" }
+        playlist: { $ref: "#/components/schemas/Set" }
+
+    Likes:
+      type: object
+      properties:
+        collection:
+          type: array
+          items: { $ref: "#/components/schemas/Like" }
+        next_href:
+          type: [string, "null"]
+          description: Set when likes remain beyond what was collected.
+        pages_fetched:
+          type: integer
+          description: How many upstream pages the walk actually cost.
+
+    PaginatedQuery:
+      type: object
+      description: The envelope api-v2 uses for search and related.
+      properties:
+        collection:
+          type: array
+          items: { type: object, additionalProperties: true }
+        total_results:
+          type: [integer, "null"]
+          description: Omitted by SoundCloud whenever a `limit` was supplied.
+        next_href: { type: [string, "null"] }
+        query_urn: { type: [string, "null"] }
