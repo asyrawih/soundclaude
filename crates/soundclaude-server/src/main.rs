@@ -93,22 +93,52 @@ fn env_flag(name: &str) -> bool {
 }
 
 /// Permissive by default so a local web player can call this; set
-/// `CORS_ALLOW_ORIGIN` to lock it down to one origin in production.
+/// `CORS_ALLOW_ORIGIN` to lock it down in production.
+///
+/// The value is a comma-separated list, not a single origin: the desktop app
+/// (Tauri) calls this server from `tauri://localhost` on macOS and
+/// `http://tauri.localhost` on Windows, alongside the web origin. A single
+/// origin here silently broke the desktop build — every request passed the
+/// server and died in the `WebView`'s CORS check with no server-side log.
+///
+///     CORS_ALLOW_ORIGIN=https://studio.kelasmalam.app,tauri://localhost,http://tauri.localhost
 fn cors_layer() -> CorsLayer {
-    use axum::http::HeaderValue;
+    let Ok(raw) = std::env::var("CORS_ALLOW_ORIGIN") else {
+        return CorsLayer::permissive();
+    };
+    if let Some(origins) = parse_allowed_origins(&raw) {
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([axum::http::Method::GET])
+            .allow_headers([axum::http::header::RANGE])
+    } else {
+        tracing::warn!(%raw, "CORS_ALLOW_ORIGIN has no valid origin; allowing any origin");
+        CorsLayer::permissive()
+    }
+}
 
-    match std::env::var("CORS_ALLOW_ORIGIN") {
-        Ok(origin) => {
-            if let Ok(value) = origin.parse::<HeaderValue>() {
-                CorsLayer::new()
-                    .allow_origin(value)
-                    .allow_methods([axum::http::Method::GET])
+/// Split `CORS_ALLOW_ORIGIN` on commas, trim, drop empties and anything that
+/// is not a valid header value. `None` when nothing usable remains — the
+/// caller then falls back to permissive with a warning rather than locking
+/// everyone out because of a typo.
+fn parse_allowed_origins(raw: &str) -> Option<Vec<axum::http::HeaderValue>> {
+    let origins: Vec<axum::http::HeaderValue> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .filter_map(|o| {
+            if let Ok(v) = o.parse::<axum::http::HeaderValue>() {
+                Some(v)
             } else {
-                tracing::warn!(%origin, "CORS_ALLOW_ORIGIN is not a valid header value; allowing any origin");
-                CorsLayer::permissive()
+                tracing::warn!(origin = %o, "CORS_ALLOW_ORIGIN entry is not a valid header value; skipped");
+                None
             }
-        }
-        Err(_) => CorsLayer::permissive(),
+        })
+        .collect();
+    if origins.is_empty() {
+        None
+    } else {
+        Some(origins)
     }
 }
 
@@ -136,4 +166,41 @@ async fn shutdown_signal() {
     }
 
     tracing::info!("shutting down");
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::parse_allowed_origins;
+
+    #[test]
+    fn single_origin_still_works() {
+        let v = parse_allowed_origins("https://studio.kelasmalam.app").unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0], "https://studio.kelasmalam.app");
+    }
+
+    #[test]
+    fn list_with_desktop_origins_and_spaces() {
+        let v = parse_allowed_origins(
+            " https://studio.kelasmalam.app, tauri://localhost ,http://tauri.localhost,, ",
+        )
+        .unwrap();
+        let s: Vec<&str> = v.iter().map(|h| h.to_str().unwrap()).collect();
+        assert_eq!(
+            s,
+            [
+                "https://studio.kelasmalam.app",
+                "tauri://localhost",
+                "http://tauri.localhost"
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_entries_are_skipped_and_empty_list_is_none() {
+        assert!(parse_allowed_origins("").is_none());
+        assert!(parse_allowed_origins(" , ,").is_none());
+        let v = parse_allowed_origins("https://ok.example,\u{1}bad").unwrap();
+        assert_eq!(v.len(), 1);
+    }
 }
