@@ -99,22 +99,21 @@ fn env_flag(name: &str) -> bool {
 /// (Tauri) calls this server from `tauri://localhost` on macOS and
 /// `http://tauri.localhost` on Windows, alongside the web origin. A single
 /// origin here silently broke the desktop build — every request passed the
-/// server and died in the WebView's CORS check with no server-side log.
+/// server and died in the `WebView`'s CORS check with no server-side log.
 ///
 ///     CORS_ALLOW_ORIGIN=https://studio.kelasmalam.app,tauri://localhost,http://tauri.localhost
 fn cors_layer() -> CorsLayer {
-    match std::env::var("CORS_ALLOW_ORIGIN") {
-        Ok(raw) => match parse_allowed_origins(&raw) {
-            Some(origins) => CorsLayer::new()
-                .allow_origin(origins)
-                .allow_methods([axum::http::Method::GET])
-                .allow_headers([axum::http::header::RANGE]),
-            None => {
-                tracing::warn!(%raw, "CORS_ALLOW_ORIGIN has no valid origin; allowing any origin");
-                CorsLayer::permissive()
-            }
-        },
-        Err(_) => CorsLayer::permissive(),
+    let Ok(raw) = std::env::var("CORS_ALLOW_ORIGIN") else {
+        return CorsLayer::permissive();
+    };
+    if let Some(origins) = parse_allowed_origins(&raw) {
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([axum::http::Method::GET])
+            .allow_headers([axum::http::header::RANGE])
+    } else {
+        tracing::warn!(%raw, "CORS_ALLOW_ORIGIN has no valid origin; allowing any origin");
+        CorsLayer::permissive()
     }
 }
 
@@ -127,9 +126,10 @@ fn parse_allowed_origins(raw: &str) -> Option<Vec<axum::http::HeaderValue>> {
         .split(',')
         .map(str::trim)
         .filter(|o| !o.is_empty())
-        .filter_map(|o| match o.parse::<axum::http::HeaderValue>() {
-            Ok(v) => Some(v),
-            Err(_) => {
+        .filter_map(|o| {
+            if let Ok(v) = o.parse::<axum::http::HeaderValue>() {
+                Some(v)
+            } else {
                 tracing::warn!(origin = %o, "CORS_ALLOW_ORIGIN entry is not a valid header value; skipped");
                 None
             }
@@ -140,6 +140,32 @@ fn parse_allowed_origins(raw: &str) -> Option<Vec<axum::http::HeaderValue>> {
     } else {
         Some(origins)
     }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("could not install the ctrl-c handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("could not install the SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+
+    tracing::info!("shutting down");
 }
 
 #[cfg(test)]
@@ -177,30 +203,4 @@ mod cors_tests {
         let v = parse_allowed_origins("https://ok.example,\u{1}bad").unwrap();
         assert_eq!(v.len(), 1);
     }
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("could not install the ctrl-c handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("could not install the SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
-
-    tracing::info!("shutting down");
 }
